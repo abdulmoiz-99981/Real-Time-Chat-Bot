@@ -1,149 +1,239 @@
-import os
-import requests
-import random
-import re
-from typing import Dict, List
+from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+import uuid
+import time
+import json
+import asyncio
+from datetime import datetime
+import uvicorn
 
-class AIProvider:
-    def __init__(self):
-        self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-        self.fallback_responses = self._initialize_fallback_responses()
-    
-    def _initialize_fallback_responses(self) -> Dict[str, List[str]]:
-        """Initialize rule-based responses for when no API key is available"""
-        return {
-            "greeting": [
-                "Hello! I'm your AI assistant. How can I help you today?",
-                "Hi there! What would you like to chat about?",
-                "Greetings! I'm here to assist you with any questions you might have.",
-                "Hello! Nice to meet you. What's on your mind?"
-            ],
-            "how_are_you": [
-                "I'm doing great, thank you for asking! I'm here and ready to help.",
-                "I'm functioning well and excited to chat with you!",
-                "I'm doing wonderfully! How are you doing today?",
-                "I'm excellent, thanks! What can I do for you?"
-            ],
-            "help": [
-                "I can help you with various topics like answering questions, having conversations, providing information, or just chatting!",
-                "I'm here to assist with questions, provide information, or simply have a friendly conversation.",
-                "I can help with many things - ask me questions, discuss topics, or just chat about whatever interests you!",
-                "Feel free to ask me anything! I can provide information, answer questions, or engage in conversation."
-            ],
-            "goodbye": [
-                "Goodbye! It was nice chatting with you. Have a great day!",
-                "See you later! Thanks for the conversation.",
-                "Farewell! Feel free to come back anytime you want to chat.",
-                "Bye! Take care and have a wonderful day!"
-            ],
-            "thanks": [
-                "You're very welcome! Happy to help.",
-                "My pleasure! Is there anything else I can assist you with?",
-                "Glad I could help! Feel free to ask if you need anything else.",
-                "You're welcome! I'm here whenever you need assistance."
-            ],
-            "name": [
-                "I'm an AI chatbot assistant created to help and chat with you!",
-                "You can call me your AI assistant. I'm here to help with questions and conversations.",
-                "I'm an AI chatbot designed to be helpful and engaging in our conversations.",
-                "I'm your friendly AI assistant, ready to chat and help however I can!"
-            ],
-            "default": [
-                "That's an interesting point! Could you tell me more about what you're thinking?",
-                "I find that topic fascinating. What specifically interests you about it?",
-                "That's a great question! Let me think about that from different angles.",
-                "I appreciate you sharing that with me. What would you like to explore further?",
-                "That's worth discussing! What aspects of this are most important to you?",
-                "Interesting perspective! I'd love to hear more of your thoughts on this.",
-                "That's something worth considering. What led you to think about this?",
-                "I can see why that would be on your mind. What's your take on it?"
-            ]
-        }
-    
-    def _classify_message(self, message: str) -> str:
-        """Classify the user message to determine appropriate response category"""
-        message_lower = message.lower().strip()
-        
-        # Greeting patterns
-        if any(word in message_lower for word in ["hello", "hi", "hey", "greetings", "good morning", "good afternoon", "good evening"]):
-            return "greeting"
-        
-        # How are you patterns
-        if any(phrase in message_lower for phrase in ["how are you", "how do you do", "how's it going", "what's up"]):
-            return "how_are_you"
-        
-        # Help patterns
-        if any(word in message_lower for word in ["help", "assist", "support", "what can you do", "capabilities"]):
-            return "help"
-        
-        # Goodbye patterns
-        if any(word in message_lower for word in ["bye", "goodbye", "see you", "farewell", "take care", "later"]):
-            return "goodbye"
-        
-        # Thanks patterns
-        if any(word in message_lower for word in ["thank", "thanks", "appreciate", "grateful"]):
-            return "thanks"
-        
-        # Name/identity patterns
-        if any(phrase in message_lower for phrase in ["what's your name", "who are you", "what are you", "your name"]):
-            return "name"
-        
-        return "default"
-    
-    def _get_fallback_response(self, message: str) -> str:
-        """Generate a rule-based response when no API is available"""
-        category = self._classify_message(message)
-        responses = self.fallback_responses.get(category, self.fallback_responses["default"])
-        return random.choice(responses)
-    
-    async def call_ai_service(self, message: str) -> str:
-        """
-        Call AI service or return fallback response
-        """
-        # If API key is available, try to use real AI service
-        if self.api_key:
-            try:
-                return await self._call_openrouter_api(message)
-            except Exception as e:
-                print(f"AI API call failed: {e}")
-                # Fall back to rule-based response
-                return self._get_fallback_response(message)
-        else:
-            # Use rule-based responses when no API key is available
-            return self._get_fallback_response(message)
-    
-    async def _call_openrouter_api(self, message: str) -> str:
-        """Call OpenRouter API (when API key is available)"""
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:8000",
-            "X-Title": "AI Chatbot"
-        }
-        
-        payload = {
-            "model": "anthropic/claude-3-sonnet",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a helpful, friendly, and knowledgeable AI assistant. Provide clear, concise, and helpful responses to user questions."
-                },
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ],
-            "max_tokens": 500,
-            "temperature": 0.7
-        }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+app = FastAPI(
+    title="AI Chat API",
+    description="OpenAI-compatible chat completion API",
+    version="1.0.0"
+)
 
-# Global instance
-ai_provider = AIProvider()
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Security
+security = HTTPBearer()
+
+# Models
+class Message(BaseModel):
+    role: str = Field(..., description="Role of the message sender")
+    content: str = Field(..., description="Content of the message")
+    name: Optional[str] = Field(None, description="Name of the sender")
+
+class ChatCompletionRequest(BaseModel):
+    model: str = Field(default="gpt-3.5-turbo", description="Model to use")
+    messages: List[Message] = Field(..., description="List of messages")
+    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(default=None, ge=1)
+    top_p: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
+    stream: Optional[bool] = Field(default=False)
+    stop: Optional[List[str]] = Field(default=None)
+    presence_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
+    frequency_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
+    user: Optional[str] = Field(default=None)
+
+class Choice(BaseModel):
+    index: int
+    message: Message
+    finish_reason: str
+
+class Usage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[Choice]
+    usage: Usage
+
+class StreamChoice(BaseModel):
+    index: int
+    delta: Dict[str, Any]
+    finish_reason: Optional[str]
+
+class ChatCompletionStreamResponse(BaseModel):
+    id: str
+    object: str = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[StreamChoice]
+
+class ModelInfo(BaseModel):
+    id: str
+    object: str = "model"
+    created: int
+    owned_by: str
+    permission: List[Dict] = []
+    root: str
+    parent: Optional[str] = None
+
+class ModelsResponse(BaseModel):
+    object: str = "list"
+    data: List[ModelInfo]
+
+# Available models
+AVAILABLE_MODELS = {
+    "gpt-3.5-turbo": {
+        "id": "gpt-3.5-turbo",
+        "object": "model",
+        "created": 1677610602,
+        "owned_by": "openai",
+        "root": "gpt-3.5-turbo",
+        "parent": None
+    },
+    "gpt-4": {
+        "id": "gpt-4",
+        "object": "model", 
+        "created": 1687882411,
+        "owned_by": "openai",
+        "root": "gpt-4",
+        "parent": None
+    },
+    "gpt-4-turbo": {
+        "id": "gpt-4-turbo",
+        "object": "model",
+        "created": 1712361441,
+        "owned_by": "openai", 
+        "root": "gpt-4-turbo",
+        "parent": None
+    }
+}
+
+# Authentication
+async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    # In production, validate against your database
+    valid_keys = ["sk-test123", "sk-prod456"]  # Replace with actual key validation
+    if credentials.credentials not in valid_keys:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return credentials.credentials
+
+# Mock AI response generator
+def generate_ai_response(messages: List[Message], model: str, temperature: float) -> str:
+    """
+    Replace this with your actual AI model integration
+    This is a mock response generator
+    """
+    last_message = messages[-1].content if messages else ""
+    
+    # Mock responses based on input
+    responses = [
+        f"I understand you're asking about: {last_message[:50]}... Here's my response.",
+        "That's an interesting question. Let me think about that.",
+        "Based on what you've shared, I would suggest...",
+        "I can help you with that. Here are some thoughts:",
+        "That's a great point. From my perspective..."
+    ]
+    
+    # Simple hash-based selection for consistency
+    response_idx = hash(last_message) % len(responses)
+    base_response = responses[response_idx]
+    
+    # Add some variation based on temperature
+    if temperature > 1.0:
+        base_response += " I'm feeling quite creative today!"
+    elif temperature < 0.3:
+        base_response = "Based on the data, " + base_response.lower()
+    
+    return base_response
+
+def count_tokens(text: str) -> int:
+    """Simple token counter - replace with actual tokenizer"""
+    return len(text.split())
+
+# API Endpoints
+@app.get("/")
+async def root():
+    return {"message": "AI Chat API", "version": "1.0.0"}
+
+@app.get("/v1/models", response_model=ModelsResponse)
+async def list_models(api_key: str = Depends(verify_api_key)):
+    models = [ModelInfo(**model_info) for model_info in AVAILABLE_MODELS.values()]
+    return ModelsResponse(data=models)
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+    request: ChatCompletionRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    # Validate model
+    if request.model not in AVAILABLE_MODELS:
+        raise HTTPException(status_code=400, detail=f"Model {request.model} not found")
+    
+    # Generate response
+    response_content = generate_ai_response(
+        request.messages, 
+        request.model, 
+        request.temperature
+    )
+    
+    # Calculate tokens
+    prompt_tokens = sum(count_tokens(msg.content) for msg in request.messages)
+    completion_tokens = count_tokens(response_content)
+    
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
+    
+    if request.stream:
+        # Streaming response
+        async def generate_stream():
+            words = response_content.split()
+            for i, word in enumerate(words):
+                chunk = ChatCompletionStreamResponse(
+                    id=completion_id,
+                    created=int(time.time()),
+                    model=request.model,
+                    choices=[StreamChoice(
+                        index=0,
+                        delta={"content": word + " "} if i < len(words) - 1 else {"content": word},
+                        finish_reason=None if i < len(words) - 1 else "stop"
+                    )]
+                )
+                yield f"data: {chunk.json()}\n\n"
+                await asyncio.sleep(0.1)  # Simulate streaming delay
+            
+            yield "data: [DONE]\n\n"
+        
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(generate_stream(), media_type="text/plain")
+    
+    else:
+        # Regular response
+        return ChatCompletionResponse(
+            id=completion_id,
+            created=int(time.time()),
+            model=request.model,
+            choices=[Choice(
+                index=0,
+                message=Message(role="assistant", content=response_content),
+                finish_reason="stop"
+            )],
+            usage=Usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens
+            )
+        )
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
